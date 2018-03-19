@@ -97,7 +97,6 @@ class InitialImportHelper
             case 'li'; $site = 'lineaires'; break;
         }
 
-
         $url = null;
         switch ($site) {
             case 'rayon-boissons'; $url = 'http://www.rayon-boissons.lxc'; break;

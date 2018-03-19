@@ -1,10 +1,6 @@
 services:
-#    edb_initial_import.example:
-#        class: Edb\InitialImportBundle\Example
-#        arguments: ["@service_id", "plain_value", "%parameter%"]
-
     smile.import_from_multi_ez4_to_platform.initial_import_helper:
-        class: Edb\InitialImportBundle\Helper\InitialImportHelper
+        class: Smile\ImportFromMultiEZ4toPlatformBundle\Helper\InitialImportHelper
         arguments:
            - @service_container
            - @ezpublish.api.repository
