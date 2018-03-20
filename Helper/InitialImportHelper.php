@@ -7,10 +7,11 @@ use eZ\Publish\API\Repository\Repository;
 use eZ\Publish\API\Repository\Values\Content\Content;
 use eZ\Publish\API\Repository\Values\Content\ContentStruct;
 use eZ\Publish\Core\Base\Exceptions\NotFoundException;
+use eZ\Publish\Core\FieldType\Author\Author;
+use Smile\ImportFromMultiEZ4toPlatformBundle\Services\ConvertXmlTextToRichTextService;
 use Symfony\Component\DependencyInjection\Container;
 use eZ\Publish\API\Repository\Values\ContentType\ContentType;
 use eZ\Publish\Core\Persistence\Database\DatabaseHandler;
-use EzSystems\EzPlatformXmlTextFieldTypeBundle\Command\ConvertXmlTextToRichTextCommand;
 use Symfony\Bridge\Monolog\Logger;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -50,8 +51,8 @@ class InitialImportHelper
     protected $dbHandler;// = $container->get("ezpublish.api.storage_engine.legacy.dbhandler");
     /** @var Logger */
     protected $logger;// = $container->get("logger"); // @?logger
-    /** @var ConvertXmlTextToRichTextCommand  */
-    protected $converter;// = new ConvertXmlTextToRichTextCommand
+    /** @var ConvertXmlTextToRichTextService  */
+    protected $converter;
 
     /** @var  string Le site d'origine des données */
     public $site;
@@ -62,8 +63,9 @@ class InitialImportHelper
      * ChappeeExtension constructor.
      * @param Container $container
      * @param Repository $repository
+     * @param ConvertXmlTextToRichTextService $converter
      */
-    public function __construct(Container $container, Repository $repository) {
+    public function __construct(Container $container, Repository $repository, ConvertXmlTextToRichTextService $converter) {
         $this->container = $container;
         $this->repository = $repository;
 
@@ -74,13 +76,8 @@ class InitialImportHelper
 
         $this->articleContentType = $this->contentTypeService->loadContentTypeByIdentifier('article');
         $this->folderContentType = $this->contentTypeService->loadContentTypeByIdentifier('folder');
-
-        /** @var DatabaseHandler $dbHandler */ // @ezpublish.api.storage_engine.legacy.dbhandler
-        $this->dbHandler = $container->get("ezpublish.api.storage_engine.legacy.dbhandler");
-        /** @var Logger $logger */
-        $this->logger = $container->get("logger"); // @?logger
-
-        $this->converter = new ConvertXmlTextToRichTextCommand($this->dbHandler, $this->logger);
+        
+        $this->converter = $converter;
     }
 
     function setInputOutputInterface(InputInterface $input, OutputInterface $output)
@@ -111,7 +108,17 @@ class InitialImportHelper
     }
 
 
+    public function getAllArticle()
+    {
+        // TODO
+    }
 
+    /**
+     * @param $id
+     * @param bool $create_if_not
+     * @return Content
+     * @throws \Exception
+     */
     function checkIfContentExist($id, $create_if_not = true)
     {
         $url = $this->url.'/export/item';
@@ -129,11 +136,17 @@ class InitialImportHelper
         $remote_id = $this->site.'_'.$var['remote_id'];
         $content = $this->getContentByRemoteId($remote_id);
         if (!$content && $create_if_not) {
+            $this->output->writeln("L'objet '$remote_id' n'existe pas. Il faut le créer");
             $this->createContent($remote_id, $var);
         } elseif ($content && $create_if_not) {
+            $this->output->writeln("L'objet '$remote_id' existe. Il faut le mettre à jour");
             $this->updateContent($content, $var);
+        } elseif($content) {
+            $this->output->writeln("L'objet '$remote_id' existe. Rien à faire");
+        } else {
+            $this->output->writeln("L'objet '$remote_id' n'existe pas. Mais on ne le cré pas.");
         }
-        return !!$content;
+        return $content;
     }
 
     /**
@@ -196,8 +209,12 @@ class InitialImportHelper
 
         foreach ($matches[1] as $ezlocation) {
             $result[] = $ezlocation;
-            echo "\n\n $ezlocation \n";
-            $this->checkIfContentExist(['node_id' => $ezlocation], true);
+            //echo "\n\n $ezlocation \n";
+            $this->output->writeln("Dépendance avec le node $ezlocation");
+            $content = $this->checkIfContentExist(['node_id' => $ezlocation], true);
+
+            $mainLocationId = $content->contentInfo->mainLocationId;
+            str_replace($ezlocation, $mainLocationId, $richText);
         }
 
 //        /** @var \DOMDocument $document */
@@ -218,13 +235,17 @@ class InitialImportHelper
 //
 //        }
 
+
+        
+
         return $result;
     }
 
     function convert($xmlText)
     {
         // https://doc.ez.no/display/EZP/The+RichText+FieldType
-        return $this->converter->convert($xmlText);
+        $result = $this->converter->convert($xmlText);
+        return $result;
     }
 
     /**
@@ -277,16 +298,101 @@ Image 	image 	ezobjectrelation
     ["tags"]=>
     string(33) "Burn, Dark Dog, Monster, Red Bull"
         */
-        $title = $var['attributes']['title']. ' ' . $this->site .' ' . date('Y-m-d H:i.s');
-        $short_title = $var['attributes']['short_title']. ' ' . $this->site . ' ' . date('Y-m-d H:i.s');
-        $xmlText = $var['attributes']['body'];
-        $converted = $this->convert($xmlText);
 
-        $this->getDependenciesFromRichText($converted);
+        $attributes = $var['attributes'];
 
-        $contentStruct->setField('title', $title);
-        $contentStruct->setField('short_title', $short_title);
-        $contentStruct->setField('intro', $converted);
+        foreach ($this->articleContentType->getFieldDefinitions() as $fd) {
+            $identifier = $fd->identifier;
+            $this->output->writeln(' ');
+            $this->output->writeln('$identifier: '.$identifier);
+            $this->output->writeln('$fd->fieldTypeIdentifier: '.$fd->fieldTypeIdentifier);
+            $value = null;
+            if (isset($attributes[$identifier])) {
+                $value = $attributes[$identifier];
+            }
+            if ($identifier == 'short_title')  {
+                $value .= ($value ? $value : $attributes['title']).' ' . $this->site . ' ' . date('Y-m-d H:i.s'); // TODO remove
+            }
+
+            $identifier_txt = $identifier.'_txt';
+            if ($this->articleContentType->getFieldDefinition($identifier_txt)) {
+                $identifier = $identifier_txt;
+                $this->output->writeln('$identifier_txt: '.$identifier_txt);
+            }
+
+            switch ($fd->fieldTypeIdentifier) {
+                case 'ezauthor' :
+                    $value = null ; //new \eZ\Publish\Core\FieldType\Author\Value([]);
+                    break;
+                case 'ezimage' :
+                    $url = $this->url.'/'.$value;
+                    $url = str_replace('www.lineaires.lxc', 'www.lineaires.com', $url);
+                    $this->output->writeln('$url: '.$url);
+
+                    $explode = explode('.', $url);
+                    $extention = array_pop($explode);
+
+                    $image_content = file_get_contents($url);
+                    if (!$image_content) {
+                        throw new \Exception("Impossible de téléchager l'image '$url'");
+                    }
+
+                    $tmpfname = tempnam("/tmp", "import_image_").'.'.$extention;
+                    var_dump($tmpfname);
+                    $handle = fopen($tmpfname, "w");
+                    $ok = fwrite($handle, $image_content);
+                    fclose($handle);
+                    if ($ok) {
+                        $value = $tmpfname;
+                    } else {
+                        $msg = "Impossible d'écrire dnas le fichier '$tmpfname'";
+                        throw new \Exception($msg);
+                    }
+
+                    break;
+            }
+            $this->output->writeln('$value: '.$value);
+
+            if ($value) {
+                $contentStruct->setField($identifier, $value);
+            }
+        }
+        $contentStruct->setField('remote_last_update', $var['modified']);
+        $contentStruct->setField('origin_object_id', $var['id']);
+        $contentStruct->setField('import_metadata', var_export($var, 1));
+
+        //["title", "short_title", "surtitre", "publish_date", "macaron", "image", "aff_vign", "accroche", "body", "author", "notes_bas_de_page", "contenus_lies", "tags"];
+
+//        $title = $var['attributes']['title'];
+//        $short_title = $var['attributes']['short_title']. ' ' . $this->site . ' ' . date('Y-m-d H:i.s');
+//        $surtitre = $var['attributes']['surtitre'];
+//
+//        $publish_date = $var['attributes']['publish_date'];
+//        $macaron = $var['attributes']['macaron'];
+//        $image = $var['attributes']['image'];
+//
+//        $accrocheXmlText = $var['attributes']['accroche'];
+//        $bodyXmlText = $var['attributes']['body'];
+//        $notes_bas_de_pageXmlText = $var['attributes']['notes_bas_de_page'];
+//        //$converted = $this->convert($xmlText);
+//        //$this->getDependenciesFromRichText($converted);
+//
+//        $author = $var['attributes']['author'];
+//        $contenus_lies = $var['attributes']['contenus_lies'];
+//        $tags = $var['attributes']['tags'];
+//
+//        $contentStruct->setField('title', $title);
+//        $contentStruct->setField('short_title', $short_title);
+//        $contentStruct->setField('surtitre', $surtitre);
+//
+//        $contentStruct->setField('accorche_txt', $accrocheXmlText);
+//        $contentStruct->setField('body_txt', $bodyXmlText);
+//        $contentStruct->setField('macaron', $macaron);
+//        $contentStruct->setField('image', $image);
+//        $contentStruct->setField('publish_date', $publish_date);
+//        //$contentStruct->setField('result', $converted);
+//        //$contentStruct->setField('ezxmltext', $xmlText);
+//        //$contentStruct->setField('body', $converted);
 
         return $contentStruct;
     }
@@ -321,9 +427,6 @@ Image 	image 	ezobjectrelation
             }
             throw $e;
         }
-
-        //$output->writeln(print_r($content,1));
-
         return $content;
     }
 
@@ -339,25 +442,26 @@ Image 	image 	ezobjectrelation
         //$output->writeln(print_r($locationCreateStruct,1));
 
         try {
-            $this->output->writeln(__LINE__);
             $draft = $this->contentService->createContent( $contentStruct, array( $locationCreateStruct ) );
+            $content = $this->contentService->publishVersion( $draft->versionInfo );
             //$output->writeln(print_r($draft,1));
         } catch (ContentFieldValidationException $e) {
             //var_dump($e);
             foreach ($e->getFieldErrors() as $fieldDefinitionId => $errorLng) {
-                foreach ($errorLng as $lng => $error) {
-                    echo PHP_EOL.PHP_EOL;
-                    var_dump($fieldDefinitionId);
-                    var_dump($lng);
-                    var_dump($error);
-                    echo PHP_EOL.PHP_EOL;
+                foreach ($errorLng as $lng => $errorList) {
+//                    var_dump($fieldDefinitionId);
+//                    var_dump($lng);
+                    foreach ($errorList as $error) {
+                        /** @var \eZ\Publish\Core\FieldType\ValidationError $error */
+                        /** @var \eZ\Publish\API\Repository\Values\Translation $message */
+                        $message = $error->getTranslatableMessage();
+                        $this->output->writeln("Erreur avec le field $fieldDefinitionId : " . print_r($message, 1));
+//                    var_dump($error);
+                    }
                 }
             }
             throw $e;
         }
-        $this->output->writeln(__LINE__);
-        $content = $this->contentService->publishVersion( $draft->versionInfo );
-        //$output->writeln(print_r($content,1));
         return $content;
     }
 

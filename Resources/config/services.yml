@@ -4,3 +4,10 @@ services:
         arguments:
            - @service_container
            - @ezpublish.api.repository
+           - @smile.import_from_multi_ez4_to_platform.convert_xmltext_to_richtext_service
+
+    smile.import_from_multi_ez4_to_platform.convert_xmltext_to_richtext_service:
+        class: Smile\ImportFromMultiEZ4toPlatformBundle\Services\ConvertXmlTextToRichTextService
+        arguments:
+            - "@ezpublish.api.storage_engine.legacy.dbhandler"
+            - "@?logger"
